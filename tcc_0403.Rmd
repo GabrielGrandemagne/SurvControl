@@ -1,0 +1,666 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+# LIBS para utilizar o DepCens
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/biblio_function_EMMC_Weibull.R")
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/dependent_censoring.R")
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/plot_dc.R")
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/summary_dc.R")
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/survivalplots.R")
+
+
+library(Formula)
+library(survival)
+library(rootSolve)
+library(dlm)
+library(matrixStats)
+library(stats)
+library(graphics)
+
+# var ident tem que ser CLINICA pois é a variavel indicadora de cluster
+```
+
+```{r}
+library(Formula)
+library(survival)
+library(dlm)
+library(graphics)
+library(matrixStats)
+library(rootSolve)
+library(stats)
+library(survminer)
+library(tidyverse)
+library(forcats)
+```
+
+CIDs
+C61 - Neoplasia maligna da próstata.
+C50 – Neoplasias [tumores] malignas da mama.
+
+```{r}
+library(readxl)
+DadosDiag2014 <- read_excel("C:/Users/Gabriel-PC/Desktop/TCC_GERAL/banco_desde2014/DadosDiag2014_2.xlsx")
+head(DadosDiag2014)
+```
+
+```{r}
+# Var "T", "M" e "N" serão utilizadas na criação da variável de ESTÁGIO
+
+#ULTINFO - Variavel CENSURA/FALHA
+#DTTRAT - DATA INICIO TRATAMENTO
+#DTDIAG - DATA DE DIAGNÓSTICO
+
+data <- DadosDiag2014 %>%
+  filter(TOPOGRUP == "C50" | TOPOGRUP == "C61" | TOPOGRUP == "C56") %>%
+  mutate(DTDIAG=as.Date(DTDIAG, format = "%Y/%m/%d"),
+         DTCONSULT=as.Date(DTCONSULT, format = "%Y/%m/%d"),
+         DTTRAT=as.Date(DTTRAT, format = "%Y/%m/%d"),
+         DTULTINFO=as.Date(DTULTINFO, format = "%Y/%m/%d"),
+         ULTINFO=as.factor(ULTINFO))
+
+# Usarei difftime(date1, date2, units = ) para obter a diferença entre duas datas, para todos os participantes do banco reduzido.
+```
+
+```{r}
+# Covariáveis:
+# TRATAMENTO (var 53 até 56) (TRATAMENTO, TRATHOSP, TRATFANTES, TRATFAPOS)
+# CATEATEND (indicador SUS)
+# SEXO
+# IDADE
+# Var tratamento SUS/não sus (CATEATEND)
+# Variável de estágio (T, N, P)
+
+data_2 <- data %>%
+ select(TOPOGRUP, DTTRAT, DTULTINFO, DTCONSULT, DTDIAG, ULTINFO, CLINICA, SEXO, IDADE, ESCOLARI, CATEATEND, TRATAMENTO, ANODIAG, PERDASEG, T, N, M) %>%
+ mutate(
+  tempo = as.numeric(difftime(data$DTULTINFO, data$DTTRAT, units = "days")/360),
+  tempo_padrao = as.numeric(difftime(data$DTULTINFO, data$DTTRAT, units = "days")),
+  delta_t = ifelse(data$ULTINFO==3,1,0),
+  delta_c = ifelse(data$ULTINFO==4,1,0),
+  CATEATEND = as.factor(CATEATEND),
+  SEXO = as.factor(SEXO),
+  ESCOLARI = as.factor(ESCOLARI),
+  PERDASEG = as.factor(PERDASEG),
+  T = as.factor(T),
+  N = as.factor(N),
+  M = as.factor(M),
+  TRATAMENTO = as.factor(TRATAMENTO),
+  TRATAMENTO_2 = TRATAMENTO)
+
+# Var ESCOLARI (Juntar 1&&2, 3&&4)
+
+#Novos níveis para a variável escolari:
+# 1 = Fundamental incompleto/analfabeto
+# 2 = Fundamental Completo/Ensino médio
+# 3 = Ensino Superior
+# 4 = Ignorada
+levels(data_2$ESCOLARI) <- c("1", "1", "2", "2", "3", "4")
+levels(data_2$TRATAMENTO_2) <- c("1", "2", "3", "4", "5", "6", "7", "8", "9", "9")
+```
+
+```{r}
+df <- data_2 %>%
+  filter(tempo > 0) %>%
+  mutate(ESTAGIO = case_when((M == "1" | M == "1A" | M == "1B" | M == "1C") ~ "IV",
+                             (N == "1" | N == "2" | N == "2A" | N == "2B" | N == "3" | N == "3A" | N == "3B" | N == "3C") ~ "III",
+                             T == "1A" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "I",
+                             T == "1B" | T == "2A" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "I",
+                             T == "2B" | T == "3A" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "II",
+                             T == "3B" | T == "4A" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "II",
+                             T == "4B" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "II",
+                             M == "0" & M == "X" & M == "Y" | T == "0" & T == "X" & T == "Y" & T == "CDIS" & T == "CLIS" & T == "IS" & T == "PAGET" | N == "0" & N == "X" & N == "Y" ~ "Z",
+                             TRUE ~ 'Z'
+                             ),
+         ESTAGIO = as.factor(ESTAGIO)) %>%
+  na.omit()
+```
+
+```{r}
+save(df, file="tcc_ggs0903.rda")
+```
+
+## Análise de Sobrevivência
+
+### The core functions we’ll use out of the survival package include:
+
+- Surv(): Creates a survival object.
+- survfit(): Fits a survival curve using either a formula, of from a previously fitted Cox model.
+- coxph(): Fits a Cox proportional hazards regression model.
+
+### Other optional functions you might use include:
+
+- cox.zph(): Tests the proportional hazards assumption of a Cox regression model.
+- survdiff(): Tests for differences in survival between two groups using a log-rank / Mantel-Haenszel test.6
+
+```{r}
+#  select(TOPOGRUP, DTTRAT, DTULTINFO, DTCONSULT, DTDIAG, ULTINFO, CLINICA, SEXO, IDADE, ESCOLARI, CATEATEND, TRATAMENTO, ANODIAG, PERDASEG, T, N, M) %>%
+
+# Modelo "completo" para o banco encurtado
+cox1 <- coxph(Surv(tempo, delta_t)~ CATEATEND + SEXO + IDADE + ESCOLARI + TRATAMENTO_2 + ESTAGIO, data=df)
+
+summary(cox1)
+cox.zph(cox1)
+```
+
+### Curva de sobrevivência/risco acumulativo por estagio
+
+```{r}
+sfit <- survfit(Surv(tempo, delta_t)~ESTAGIO, data=df)
+#sfit
+#summary(sfit)
+
+# Curva de Sobrevivência
+ggsurvplot(sfit, conf.int=TRUE) 
+#           legend.labs=c("I", "II", "III", "IV", "Z"), legend.title="Estagio",  
+#           palette=c("dodgerblue2", "orchid2", "purple4", "red", "green"), 
+#           ggtheme = theme_bw(),
+#           title="Kaplan-Meier Curve")
+
+
+# Plot the cumulative hazard function
+ggsurvplot(sfit, conf.int = TRUE, 
+#           legend.labs=c("I", "II", "III", "IV", "Z"), legend.title="Estagio",
+#           palette = c("dodgerblue2", "orchid2", "purple4", "red", "green"),
+           risk.table.col = "strata",
+          title="Função Risco Acumulado - Kaplan-Meier",
+#           ggtheme = theme_bw(),
+           fun = "cumhaz")
+```
+
+```{r}
+sfit2 <- survfit(Surv(tempo, delta_t)~SEXO, data=df)
+#sfit
+#summary(sfit)
+
+# Curva de Sobrevivência
+ggsurvplot(sfit2, conf.int=TRUE, 
+           ggtheme = theme_bw(),
+           title="Kaplan-Meier Curve")
+
+ggsurvplot(sfit2, conf.int=TRUE, 
+           fun = "cumhaz",
+           ggtheme = theme_bw(),
+           title="Kaplan-Meier Curve")
+
+# Plot the cumulative hazard function
+#ggsurvplot(sfit, conf.int = TRUE, 
+#           legend.labs=c("IA", "IB", "IIA", "IIB", "IIC", "III", "IV", "Z"), legend.title="Estagio",
+#           palette = c("dodgerblue2", "orchid2", "green4", "grey47", "orange3", "purple4", "red", "green"),
+#           risk.table.col = "strata",
+#           fun = "cumhaz")
+```
+
+
+# COX Univariado
+
+```{r}
+df2 <- df %>%
+  filter(tempo > 0) %>%
+  mutate(ESTAGIO_num = case_when((M == "1" | M == "1A" | M == "1B" | M == "1C") ~ "4",
+                             (N == "1" | N == "2" | N == "2A" | N == "2B" | N == "3" | N == "3A" | N == "3B" | N == "3C") ~ "3",
+                             T == "1A" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "1",
+                             T == "1B" | T == "2A" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "1",
+                             T == "2B" | T == "3A" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "2",
+                             T == "3B" | T == "4A" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "2",
+                             T == "4B" & (N == "0" | N == "X" | N == "Y") & (M == "0" | M == "X" | M == "Y") ~ "2",
+                             M == "0" & M == "X" & M == "Y" | T == "0" & T == "X" & T == "Y" & T == "CDIS" & T == "CLIS" & T == "IS" & T == "PAGET" | N == "0" & N == "X" & N == "Y" ~ "0",
+                             TRUE ~ '0'
+                             ),
+         ESTAGIO_num = as.numeric(ESTAGIO_num),
+         SEXO = as.numeric(SEXO),
+         CATEATEND = as.numeric(CATEATEND),
+         ESCOLARI = as.numeric(ESCOLARI)) %>%
+  na.omit()
+```
+
+```{r}
+save(df2, file="df2.rda")
+```
+
+```{r}
+# fazer isso aqui funcionar
+covarlist <- c("SEXO", "CATEATEND", "IDADE", "ESCOLARI")
+
+
+#covariates <- c("age", "sex",  "ph.karno", "ph.ecog", "wt.loss")
+
+univ_formulas <- sapply(covarlist,
+                        function(x) as.formula(paste('Surv(tempo, delta_t)~', x)))
+                        
+univ_models <- lapply( univ_formulas, function(x){coxph(x, data = df2)})
+# Extract data 
+univ_results <- lapply(univ_models,
+                       function(x){ 
+                          x <- summary(x)
+                          p.value<-signif(x$wald["pvalue"], digits=2)
+                          wald.test<-signif(x$wald["test"], digits=2)
+                          beta<-signif(x$coef[1], digits=2);#coeficient beta
+                          HR <-signif(x$coef[2], digits=2);#exp(beta)
+                          HR.confint.lower <- signif(x$conf.int[,"lower .95"], 2)
+                          HR.confint.upper <- signif(x$conf.int[,"upper .95"],2)
+                          HR <- paste0(HR, " (", 
+                                       HR.confint.lower, "-", HR.confint.upper, ")")
+                          res<-c(beta, HR, wald.test, p.value)
+                          names(res)<-c("beta", "HR (95% CI for HR)", "wald.test", 
+                                        "p.value")
+                          return(res)
+                          #return(exp(cbind(coef(x),confint(x))))
+                         })
+res <- t(as.data.frame(univ_results, check.names = FALSE))
+as.data.frame(res)
+```
+
+```{r}
+df5650 <- df2 %>%
+  filter(TOPOGRUP %in% c("C50", "C56"))
+
+df61 <- df2 %>%
+  filter(TOPOGRUP %in% "C61")
+
+df56 <- df2 %>%
+  filter(TOPOGRUP %in% "C56")
+
+df50 <- df2 %>%
+  filter(TOPOGRUP %in% "C50")
+```
+
+## Censura dependente
+
+```{r}
+# LIBS para utilizar o DepCens
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/biblio_function_EMMC_Weibull.R")
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/dependent_censoring.R")
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/plot_dc.R")
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/summary_dc.R")
+source("C:/Users/Gabriel-PC/Desktop/progamation/Bolsa Silvana/PacoteAntigo_DepCens/DepCens-master/R/survivalplots.R")
+
+
+library(Formula)
+library(survival)
+library(rootSolve)
+library(dlm)
+library(matrixStats)
+library(stats)
+library(graphics)
+
+# var ident tem que ser CLINICA pois é a variavel indicadora de cluster
+```
+
+```{r}
+df5650 <- df2 %>%
+  filter(TOPOGRUP %in% c("C50", "C56"))
+
+# Modelo "completo" para pacientes com cancer de mama e ovário
+cox1 <- coxph(Surv(tempo, delta_t)~ CATEATEND + SEXO + IDADE + ESCOLARI + ESTAGIO + TRATAMENTO, data=df5650)
+summary(cox1)
+cox.zph(cox1)
+
+
+# Modelo para pacientes com cancer de mama 
+cox2 <- coxph(Surv(tempo, delta_t)~ CATEATEND + SEXO + IDADE + ESCOLARI + ESTAGIO + TRATAMENTO, data=df50)
+summary(cox2)
+cox.zph(cox2)
+
+
+# Modelo para pacientes com cancer de ovário
+cox3 <- coxph(Surv(tempo, delta_t)~ CATEATEND + IDADE + ESCOLARI + ESTAGIO + TRATAMENTO, data=df56)
+summary(cox3)
+cox.zph(cox3)
+```
+
+## DEPCENS para banco com ambos os cânceres
+
+```{r}
+df3 <- df2 %>%
+  mutate(
+    CATEATEND = as.factor(CATEATEND),
+    SEXO = as.factor(SEXO),
+    ESCOLARI = as.factor(ESCOLARI),
+  )
+
+# 0 = Particular, 1 = SUS
+levels(df3$CATEATEND) <- c("0", "1", "0")
+
+# O = MASCULINO, 1= FEMININO
+levels(df3$SEXO) <- c("0", "1")
+
+df5650_ <- df3 %>%
+  filter(TOPOGRUP %in% c("C50", "C56")) %>%
+           mutate(
+             delta_t2 = ifelse(df5650$ULTINFO==3 & TOPOGRUP=="C50",1,0),
+             delta_t3 = ifelse(df5650$ULTINFO==3 & TOPOGRUP=="C56",1,0),
+             ESTAGIO_56 = ifelse(df5650$ESTAGIO_num==4,1,0),
+             ESTAGIO_56 = as.factor(ESTAGIO_56)
+           )
+# variável ESTAGIO_56 INDICADORA com 1 = estagio 4, 0= estagio 0
+
+# aqui, 0 = Estagio 0, 1 = estagio 4
+df56_ <- df3 %>%
+  filter(TOPOGRUP %in% "C56") %>%
+  mutate(
+    ESTAGIOt = as.factor(ESTAGIO_num)
+  )
+
+levels(df56_$ESTAGIOt) <- c("0", "1")
+
+df50_ <- df3 %>%
+  filter(TOPOGRUP %in% "C50")
+```
+
+Preciso fazer o depcens novamente para C50, C56 e AMBOS, com variáveis como fatores! Começando aqui por C56
+
+```{r}
+delta_t <- ifelse(df56_$ULTINFO==3,1,0)
+delta_c <- ifelse(df56_$ULTINFO==4,1,0) 
+
+c56novo_depcens <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIOt + CATEATEND + ESCOLARI | IDADE + ESTAGIOt + CATEATEND + ESCOLARI, data=df56_, delta_t=delta_t,
+                           delta_c=delta_c, ident=df56_$CLINICA, dist = "mep")
+
+c56novo_depcensWEIB <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIOt + CATEATEND + ESCOLARI | IDADE + ESTAGIOt + CATEATEND + ESCOLARI, data=df56_, delta_t=delta_t,
+                           delta_c=delta_c, ident=df56_$CLINICA, dist = "weibull")
+
+#C50
+
+delta_t <- ifelse(df50_$ULTINFO==3,1,0)
+delta_c <- ifelse(df50_$ULTINFO==4,1,0) 
+
+c50novo_depcens <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO + CATEATEND + ESCOLARI + SEXO | IDADE + ESTAGIO + CATEATEND + ESCOLARI + SEXO, data=df50_, delta_t=delta_t,
+                           delta_c=delta_c, ident=df50_$CLINICA, dist = "mep")
+
+c50novo_depcensWEIB <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO + CATEATEND + ESCOLARI + SEXO | IDADE + ESTAGIO + CATEATEND + ESCOLARI + SEXO, data=df50_, delta_t=delta_t,
+                           delta_c=delta_c, ident=df50_$CLINICA, dist = "weibull")
+
+# AMBOS
+
+#levels(df5650_$ESTAGIO) <- c("1", "2", "3", "4", "0")
+
+#c50c56novo_depcensMEP <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_56 + CATEATEND + ESCOLARI | IDADE + ESTAGIO_56 + CATEATEND + ESCOLARI, data=df5650_, delta_t=df5650_$delta_t2,
+#                           delta_c=df5650_$delta_t3, ident=df5650_$CLINICA, dist = "mep")
+
+#c50c56novo_depcensWEIB <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_56 + CATEATEND + ESCOLARI | IDADE + ESTAGIO_56 + CATEATEND + ESCOLARI, data=df5650_, delta_t=df5650_$delta_t2,
+#                           delta_c=df5650_$delta_t3, ident=df5650_$CLINICA, dist = "weibull")
+
+#c50c56novo_depcensMEP2 <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_56 + CATEATEND + ESCOLARI | IDADE + ESTAGIO_56 + CATEATEND + ESCOLARI, data=df5650_, delta_t=df5650_$delta_t2,
+#                           delta_c=df5650_$delta_t3, ident=df5650_$CLINICA, dist = "mep")
+
+#c50c56novo_depcensWEIB3 <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_56 + CATEATEND + ESCOLARI | IDADE + ESTAGIO_56 + CATEATEND + ESCOLARI, data=df5650_, delta_t=df5650_$delta_t2,
+#                           delta_c=df5650_$delta_t3, ident=df5650_$CLINICA, dist = "weibull")
+```
+
+## Transformando o output do DEPCENS para uma TABLE: FIT 1
+
+```{r}
+object <- c50novo_depcens
+bmax <- object$bmax
+p <- object$p
+q <- object$q
+crits <- object$crit
+pvalues <- object$pvalue
+
+teste <- data.frame(ESTIMATE = c(format(object[[1]][(p+bmax+q+1)],nsmall=6), format(object[[1]][(p+bmax+q+bmax+2)],nsmall=6)), Stde = c(format(object[[2]][(p+bmax+q+1)], nsmall=6), format(object[[2]][(p+bmax+q+bmax+2)], nsmall=6)), CINF = c(format((object[[1]][(p+bmax+q+1)] - 1.96*object[[1]][(p+bmax+q+1)]),nsmall=6), pmax(format((object[[1]][(p+bmax+q+bmax+2)] - 1.96*object[[1]][(p+bmax+q+bmax+2)]),nsmall=6), "0.000000")), CSUP = c(format((object[[1]][(p+bmax+q+1)] + 1.96*object[[1]][(p+bmax+q+1)]), nsmall=6),format((object[[1]][(p+bmax+q+bmax+2)] + 1.96*object[[1]][(p+bmax+q+bmax+2)]),nsmall=6)), PVALUE = c(format(pvalues[1], digits = 4, nsmall = 3), NA))
+
+```
+
+
+```{r}
+library(dplyr)
+
+teste <- teste %>%
+  mutate(
+    ESTIMATE = as.numeric(ESTIMATE),
+    Stde = as.numeric(Stde),
+    CINF = as.numeric(CINF),
+    CSUP = as.numeric(CSUP),
+    PVALUE = as.numeric(PVALUE)
+  )
+
+c50_df <- teste %>%
+    bind_rows((data.frame(ESTIMATE = c(object[[1]][c(1:p)]), Stde = c(object[[2]][c(1:p)]), CINF = c(object[[1]][c(1:p)] - 1.96*object[[2]][c(1:p)]), CSUP = c(object[[1]][c(1:p)] + 1.96*object[[2]][c(1:p)]), PVALUE = pvalues[2:(p+1)])))
+
+c50novo_df <- c50_df %>%
+    bind_rows((data.frame(ESTIMATE = object[[1]][c(p+bmax+(1:q))], Stde = c(object[[2]][c(p+bmax+(1:q))]), CINF = c(object[[1]][c(p+bmax+(1:q))] - 1.96*object[[2]][c(p+bmax+(1:q))]), CSUP = c(object[[1]][c(p+bmax+(1:q))] + 1.96*object[[2]][c(p+bmax+(1:q))]), PVALUE = pvalues[1+p+(1:q)])))
+  
+# caso de agr
+rownames(c50novo_df) <- c("Alpha", "Sigma", "IDADE_T", "ESTAGIOII_T", "ESTAGIOIII_T", "ESTAGIOIV_T", "ESTAGIOZ_T", "CATEATEND1_T", "ESCOLARI2_T", "ESCOLARI3_T","ESCOLARI4_T","SEXO1_T", "IDADE_C", "ESTAGIOII_C", "ESTAGIOIII_C", "ESTAGIOIV_C", "ESTAGIOZ_C", "CATEATEND1_C", "ESCOLARI2_C", "ESCOLARI3_C","ESCOLARI4_C", "SEXO1_C")
+```
+
+```{r}
+library(xtable)
+print(xtable(c5056novo_df, type = "latex"), file = "c5056novo_df.tex")
+```
+
+Agora C50
+
+```{r}
+delta_t <- ifelse(df50_$ULTINFO==3,1,0)
+delta_c <- ifelse(df50_$ULTINFO==4,1,0) 
+
+c50novo_depcens <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO + CATEATEND + ESCOLARI + SEXO | IDADE + ESTAGIO + CATEATEND + ESCOLARI + SEXO, data=df50_, delta_t=delta_t,
+                           delta_c=delta_c, ident=df50_$CLINICA, dist = "mep")
+```
+
+```{r}
+df5650 <- df2 %>%
+  filter(TOPOGRUP %in% c("C50", "C56")) %>%
+           mutate(
+             delta_t2 = ifelse(df5650$ULTINFO==3 & TOPOGRUP=="C50",1,0),
+             delta_t3 = ifelse(df5650$ULTINFO==3 & TOPOGRUP=="C56",1,0)
+           )
+
+# Utilizar os deltas de diferentes cancer (delta_t = obito cancer mama // delta_c = obito cancer ovario)
+#delta_t <- ifelse(df56$ULTINFO==3,1,0)
+#delta_c <- ifelse(df50$ULTINFO==3,1,0) 
+#
+#fit1 <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_num + CATEATEND + ESCOLARI | IDADE + ESCOLARI + CATEATEND + #ESTAGIO_num, data=df5650, delta_t=delta_t,
+#                           delta_c=delta_c, ident=df5650$CLINICA, dist = "mep")
+```
+
+## DEPCENS apenas para c50
+
+```{r}
+delta_t <- ifelse(df5650$ULTINFO==3,1,0)
+delta_c <- ifelse(df5650$ULTINFO==4,1,0) 
+
+fit1_novoMEP <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_num + CATEATEND + ESCOLARI | IDADE + ESTAGIO_num + CATEATEND + ESCOLARI, data=df5650, delta_t=df5650$delta_t2,
+                           delta_c=df5650$delta_t3, ident=df5650$CLINICA, dist = "mep")
+
+fit1_novoWEIB <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_num + CATEATEND + ESCOLARI | IDADE + ESTAGIO_num + CATEATEND + ESCOLARI, data=df5650, delta_t=df5650$delta_t2,
+                           delta_c=df5650$delta_t3, ident=df5650$CLINICA, dist = "weibull")
+```
+
+```{r}
+delta_t <- ifelse(df50$ULTINFO==3,1,0)
+delta_c <- ifelse(df50$ULTINFO==4,1,0) 
+
+fit2 <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO + CATEATEND + as.factor(ESCOLARI) + SEXO | IDADE + as.factor(ESCOLARI) + CATEATEND + ESTAGIO + SEXO, data=df50, delta_t=delta_t,
+                           delta_c=delta_c, ident=df50$CLINICA, dist = "mep")
+```
+
+```{r}
+delta_t <- ifelse(df56$ULTINFO==3,1,0)
+delta_c <- ifelse(df56$ULTINFO==4,1,0) 
+fit3 <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_num + CATEATEND + as.factor(ESCOLARI) | IDADE + as.factor(ESCOLARI) + CATEATEND + ESTAGIO_num, data=df56, delta_t=delta_t,
+                           delta_c=delta_c, ident=df56$CLINICA, dist = "mep")
+```
+
+## DEPCENS WEIBULL
+
+```{r}
+#delta_t <- ifelse(df5650$ULTINFO==3,1,0)
+#delta_c <- ifelse(df5650$ULTINFO==4,1,0) 
+#
+#fit1WEIB <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_num + CATEATEND + ESCOLARI + SEXO | IDADE + ESCOLARI + CATEATEND #+ ESTAGIO_num + SEXO, data=df5650, delta_t=delta_t,
+#                           delta_c=delta_c, ident=df5650$CLINICA, dist = "weibull")
+
+delta_t <- ifelse(df50$ULTINFO==3,1,0)
+delta_c <- ifelse(df50$ULTINFO==4,1,0) 
+
+fit2WEIB <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_num + CATEATEND + ESCOLARI + SEXO | IDADE + ESCOLARI + CATEATEND + ESTAGIO_num + SEXO, data=df50, delta_t=delta_t,
+                           delta_c=delta_c, ident=df50$CLINICA, dist = "weibull")
+
+delta_t <- ifelse(df56$ULTINFO==3,1,0)
+delta_c <- ifelse(df56$ULTINFO==4,1,0) 
+
+fit3 <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_num + CATEATEND + ESCOLARI | IDADE + ESCOLARI + CATEATEND + ESTAGIO_num, data=df56, delta_t=delta_t,
+                           delta_c=delta_c, ident=df56$CLINICA, dist = "mep")
+
+fit3WEIB <- dependent.censoring(formula = tempo ~ IDADE + ESTAGIO_num + CATEATEND + ESCOLARI | IDADE + ESCOLARI + CATEATEND + ESTAGIO_num, data=df56, delta_t=delta_t,
+                           delta_c=delta_c, ident=df56$CLINICA, dist = "weibull")
+```
+
+## Transformando o output do DEPCENS para uma TABLE: FIT 1
+
+```{r}
+object <- fit1_novoMEP
+bmax <- object$bmax
+p <- object$p
+q <- object$q
+crits <- object$crit
+pvalues <- object$pvalue
+
+teste <- data.frame(ESTIMATE = c(format(object[[1]][(p+bmax+q+1)],nsmall=6), format(object[[1]][(p+bmax+q+bmax+2)],nsmall=6)), Stde = c(format(object[[2]][(p+bmax+q+1)], nsmall=6), format(object[[2]][(p+bmax+q+bmax+2)], nsmall=6)), CINF = c(format((object[[1]][(p+bmax+q+1)] - 1.96*object[[1]][(p+bmax+q+1)]),nsmall=6), pmax(format((object[[1]][(p+bmax+q+bmax+2)] - 1.96*object[[1]][(p+bmax+q+bmax+2)]),nsmall=6), "0.000000")), CSUP = c(format((object[[1]][(p+bmax+q+1)] + 1.96*object[[1]][(p+bmax+q+1)]), nsmall=6),format((object[[1]][(p+bmax+q+bmax+2)] + 1.96*object[[1]][(p+bmax+q+bmax+2)]),nsmall=6)), PVALUE = c(format(pvalues[1], digits = 4, nsmall = 3), NA))
+
+```
+
+
+```{r}
+library(dplyr)
+
+teste <- teste %>%
+  mutate(
+    ESTIMATE = as.numeric(ESTIMATE),
+    Stde = as.numeric(Stde),
+    CINF = as.numeric(CINF),
+    CSUP = as.numeric(CSUP),
+    PVALUE = as.numeric(PVALUE)
+  )
+
+depcens_df <- teste %>%
+    bind_rows((data.frame(ESTIMATE = c(object[[1]][c(1:p)]), Stde = c(object[[2]][c(1:p)]), CINF = c(object[[1]][c(1:p)] - 1.96*object[[2]][c(1:p)]), CSUP = c(object[[1]][c(1:p)] + 1.96*object[[2]][c(1:p)]), PVALUE = pvalues[2:(p+1)])))
+
+novo_depcens_df <- depcens_df %>%
+    bind_rows((data.frame(ESTIMATE = object[[1]][c(p+bmax+(1:q))], Stde = c(object[[2]][c(p+bmax+(1:q))]), CINF = c(object[[1]][c(p+bmax+(1:q))] - 1.96*object[[2]][c(p+bmax+(1:q))]), CSUP = c(object[[1]][c(p+bmax+(1:q))] + 1.96*object[[2]][c(p+bmax+(1:q))]), PVALUE = pvalues[1+p+(1:q)])))
+  
+# caso de agr
+rownames(novo_depcens_df) <- c("Alpha", "Sigma", "IDADE_T", "ESTAGIO_T", "CATAEA_T", "ESCOLARI_T", "IDADE_C", "ESTAGIO_C", "CATAEA_C", "ESCOLARI_C")
+```
+
+```{r}
+save(novo_depcens_df, file="novo_depcens_df.rda")
+```
+
+```{r}
+library("writexl")
+write_xlsx(depcens_df3,"C:/Users/Gabriel-PC/Desktop/TCC_GERAL/Projeto_R_tcc/depcens_fit3.xlsx")
+```
+
+## Transformando o output do DEPCENS para uma TABLE: FIT 2
+
+```{r}
+object <- fit3
+bmax <- object$bmax
+p <- object$p
+q <- object$q
+crits <- object$crit
+pvalues <- object$pvalue
+
+teste <- data.frame(ESTIMATE = c(format(object[[1]][(p+bmax+q+1)],nsmall=6), format(object[[1]][(p+bmax+q+bmax+2)],nsmall=6)), Stde = c(format(object[[2]][(p+bmax+q+1)], nsmall=6), format(object[[2]][(p+bmax+q+bmax+2)], nsmall=6)), CINF = c(format((object[[1]][(p+bmax+q+1)] - 1.96*object[[1]][(p+bmax+q+1)]),nsmall=6), pmax(format((object[[1]][(p+bmax+q+bmax+2)] - 1.96*object[[1]][(p+bmax+q+bmax+2)]),nsmall=6), "0.000000")), CSUP = c(format((object[[1]][(p+bmax+q+1)] + 1.96*object[[1]][(p+bmax+q+1)]), nsmall=6),format((object[[1]][(p+bmax+q+bmax+2)] + 1.96*object[[1]][(p+bmax+q+bmax+2)]),nsmall=6)), PVALUE = c(format(pvalues[1], digits = 4, nsmall = 3), NA))
+
+```
+
+
+```{r}
+library(dplyr)
+
+teste <- teste %>%
+  mutate(
+    ESTIMATE = as.numeric(ESTIMATE),
+    Stde = as.numeric(Stde),
+    CINF = as.numeric(CINF),
+    CSUP = as.numeric(CSUP),
+    PVALUE = as.numeric(PVALUE)
+  )
+
+depcens_df <- teste %>%
+    bind_rows((data.frame(ESTIMATE = c(object[[1]][c(1:p)]), Stde = c(object[[2]][c(1:p)]), CINF = c(object[[1]][c(1:p)] - 1.96*object[[2]][c(1:p)]), CSUP = c(object[[1]][c(1:p)] + 1.96*object[[2]][c(1:p)]), PVALUE = pvalues[2:(p+1)])))
+
+depcens_df3 <- depcens_df %>%
+    bind_rows((data.frame(ESTIMATE = object[[1]][c(p+bmax+(1:q))], Stde = c(object[[2]][c(p+bmax+(1:q))]), CINF = c(object[[1]][c(p+bmax+(1:q))] - 1.96*object[[2]][c(p+bmax+(1:q))]), CSUP = c(object[[1]][c(p+bmax+(1:q))] + 1.96*object[[2]][c(p+bmax+(1:q))]), PVALUE = pvalues[1+p+(1:q)])))
+  
+# caso de agr
+rownames(depcens_df3) <- c("Alpha", "Sigma", "IDADE_T", "ESTAGIO_T", "CATAEA_T", "ESCOLARI_T", "IDADE_C", "ESCOLARI_C", "CATAEA_C", "ESTAGIO_C")
+```
+
+
+## DATAFRAME para WEIBULL
+
+```{r}
+# beautiful
+object <- c50novo_depcensWEIB
+p <- object$p
+q <- object$q
+crits <- object$crit
+pvalues <- object$pvalue
+
+testeWEIB <- data.frame(ESTIMATE = c(format(object[[1]][(5+p+q)],nsmall=6), format(object[[1]][(6+p+q)],nsmall=6)), Stde = c(format(object[[2]][(5+p+q)], nsmall=6), format(object[[2]][(6+p+q)], nsmall=6)), CINF = c(format((object[[1]][c(5+p+q)] - 1.96*object[[2]][c(5+p+q)]),nsmall=6), pmax(format((object[[1]][c(6+p+q)] - 1.96*object[[2]][c(6+p+q)]),nsmall=6), "0.000000")), CSUP = c(format((object[[1]][c(5+p+q)] + 1.96*object[[2]][c(5+p+q)]),nsmall=6),format((object[[1]][c(6+p+q)] + 1.96*object[[2]][c(6+p+q)]),nsmall=6)), PVALUE = c(format(pvalues[1], digits = 4, nsmall = 3), NA))
+```
+
+
+```{r}
+
+# format((object[[1]][c(2+i)] - 1.96*object[[2]][c(2+i)]),nsmall=6),format((object[[1]][c(2+i)] + 1.96*object[[2]][c(2+i)]),nsmall=6)
+
+library(dplyr)
+
+testeWEIB <- testeWEIB %>%
+  mutate(
+    ESTIMATE = as.numeric(ESTIMATE),
+    Stde = as.numeric(Stde),
+    CINF = as.numeric(CINF),
+    CSUP = as.numeric(CSUP),
+    PVALUE = as.numeric(PVALUE)
+  )
+
+# BELEZA
+c50novo <- testeWEIB %>%
+    bind_rows((data.frame(ESTIMATE = c(object[[1]][c(3:(p+2))]), Stde = c(object[[2]][c(3:(p+2))]), CINF = c(object[[1]][c(3:(p+2))] - 1.96*object[[2]][c(3:(p+2))]), CSUP = c(object[[1]][c(3:(p+2))] + 1.96*object[[2]][c(3:(p+2))]), PVALUE = pvalues[c(2:(p+1))])))
+
+c50novo_dfWEIB <- c50novo %>%
+    bind_rows((data.frame(ESTIMATE = c(object[[1]][c(4+p+(1:q))]), Stde = c(object[[2]][c(4+p+(1:q))]), CINF = c((object[[1]][c(4+p+(1:q))] - 1.96*object[[2]][c(4+p+(1:q))])), CSUP = c((object[[1]][c(4+p+(1:q))] + 1.96*object[[2]][c(4+p+(1:q))])), PVALUE = pvalues[1+p+(1:q)])))
+  
+# caso de agr
+#rownames(c56novo_dfWEIB) <- c("Alpha", "Sigma", "IDADE_T", "ESTAGIO1_T", "CATEATEND1_T", "ESCOLARI2_T", "ESCOLARI3_T","ESCOLARI4_T", "IDADE_C", "ESTAGIO1_C", "CATEATEND1_C", "ESCOLARI2_C", "ESCOLARI3_C","ESCOLARI4_C")
+
+# caso c50
+rownames(c50novo_dfWEIB) <- c("Alpha", "Sigma", "IDADE_T", "ESTAGIOII_T", "ESTAGIOIII_T", "ESTAGIOIV_T", "ESTAGIOZ_T", "CATEATEND1_T", "ESCOLARI2_T", "ESCOLARI3_T","ESCOLARI4_T","SEXO1_T", "IDADE_C", "ESTAGIOII_C", "ESTAGIOIII_C", "ESTAGIOIV_C", "ESTAGIOZ_C", "CATEATEND1_C", "ESCOLARI2_C", "ESCOLARI3_C","ESCOLARI4_C", "SEXO1_C")
+```
+
+
+```{r}
+save(c50novo_dfWEIB, file="c50novo_dfWEIB.rda")
+```
+
+```{r}
+library("writexl")
+write_xlsx(depcens_dfWEIB3,"C:/Users/Gabriel-PC/Desktop/TCC_GERAL/Projeto_R_tcc/depcens_dfWEIB3.xlsx")
+```
+
+
+## PLOTS
+
+```{r}
+plot_dc(fit1, scenario = "t")
+```
+
+
+## Para exportar os dataframes em latex, usamos
+
+```{r}
+print(xtable(c5056novo_dfWEIB, type = "latex"), file = "c5056novo_dfWEIB.tex")
+```
+
+
+
