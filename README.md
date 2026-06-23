@@ -27,14 +27,11 @@ Applied to anonymized hospital cancer-registry data (RHC) from the **Fundação 
 # 1. Install all dependencies (run once)
 source("install.R")
 
-# 2. Pre-compute the DepCens models (run once — takes a few minutes)
-source("precompute.R")
-
-# 3. Launch the app
+# 2. Launch the app
 shiny::runApp("app.R")
 ```
 
-> Steps 1 and 2 only need to be run once after cloning. After that, only step 3 is needed.
+> Step 1 only need to be run once after cloning. After that, only step 2 is needed.
 
 ## Tech
 
