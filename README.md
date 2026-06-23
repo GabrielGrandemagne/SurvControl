@@ -19,6 +19,23 @@ Built as my undergraduate thesis in Statistics at UFRGS (advisor: Profa. Dra. Si
 
 Applied to anonymized hospital cancer-registry data (RHC) from the **Fundação Oncocentro de São Paulo (FOSP, 2022)**, with a comparative case study of **breast (C50)** and **ovarian (C56)** cancer patients. The analysis found a meaningful association between failure and censoring times — confirming the value of dependent-censoring models for this data.
 
+## Getting Started
+
+**Requirements:** R ≥ 4.0
+
+```r
+# 1. Install all dependencies (run once)
+source("install.R")
+
+# 2. Pre-compute the DepCens models (run once — takes a few minutes)
+source("precompute.R")
+
+# 3. Launch the app
+shiny::runApp("app.R")
+```
+
+> Steps 1 and 2 only need to be run once after cloning. After that, only step 3 is needed.
+
 ## Tech
 
 R · Shiny · survival · [DepCens](https://github.com/GabrielGrandemagne/DepCens)

@@ -84,7 +84,7 @@ ui <- dashboardPage(skin = "purple",
           box(title = "Modelo de Cox", status = "primary", solidHeader = TRUE,
               collapsible = TRUE, tableOutput("coxstable")),
           box(title = "Teste de Schoenfeld", status = "primary", solidHeader = TRUE,
-              collapsible = TRUE, plotOutput("coxplot"))
+              collapsible = TRUE, uiOutput("coxplot_ui"))
         )
       ),
       tabItem(tabName = "depcens",
@@ -130,24 +130,33 @@ server <- function(input, output) {
     plot_dc(fit_escolhido, scenario = input$scen)
   })
 
+  cox_test_r <- reactive({
+    switch(input$cid,
+      "All"        = cox.zph(cox1),
+      "C56 e C50"  = cox.zph(cox2),
+      "C50"        = cox.zph(cox3),
+      "C56"        = cox.zph(cox4),
+      "C61"        = cox.zph(cox5)
+    )
+  })
+
+  output$coxstable <- renderTable({
+    switch(input$cid,
+      "All"        = coxtable1,
+      "C56 e C50"  = coxtable2,
+      "C50"        = coxtable3,
+      "C56"        = coxtable4,
+      "C61"        = coxtable5
+    )
+  })
+
+  output$coxplot_ui <- renderUI({
+    n_panels <- nrow(cox_test_r()$table) - 1  # subtract GLOBAL row
+    plotOutput("coxplot", height = paste0(max(300, n_panels * 200), "px"))
+  })
+
   output$coxplot <- renderPlot({
-    if (input$cid == "All") {
-      output$coxstable <- renderTable(coxtable1)
-      cox_test <- cox.zph(cox1)
-    } else if (input$cid == "C56 e C50") {
-      output$coxstable <- renderTable(coxtable2)
-      cox_test <- cox.zph(cox2)
-    } else if (input$cid == "C50") {
-      output$coxstable <- renderTable(coxtable3)
-      cox_test <- cox.zph(cox3)
-    } else if (input$cid == "C56") {
-      output$coxstable <- renderTable(coxtable4)
-      cox_test <- cox.zph(cox4)
-    } else if (input$cid == "C61") {
-      output$coxstable <- renderTable(coxtable5)
-      cox_test <- cox.zph(cox5)
-    }
-    ggcoxzph(cox_test)
+    ggcoxzph(cox_test_r())
   })
 
   get_data <- reactive({
@@ -161,17 +170,20 @@ server <- function(input, output) {
   })
 
   make_sfit <- function(data, covar) {
-    survfit(as.formula(paste("Surv(tempo, delta_t) ~", covar)), data = data)
+    f <- as.formula(paste("Surv(tempo, delta_t) ~", covar))
+    do.call(survfit, list(formula = f, data = data))
   }
 
   output$graficosurv <- renderPlot({
-    sfit <- make_sfit(get_data(), input$caixa)
-    ggsurvplot(sfit, conf.int = TRUE, ggtheme = theme_bw())
+    dat <- get_data()
+    sfit <- make_sfit(dat, input$caixa)
+    ggsurvplot(sfit, data = dat, conf.int = TRUE, ggtheme = theme_bw())
   })
 
   output$graficohazard <- renderPlot({
-    sfit <- make_sfit(get_data(), input$caixa)
-    ggsurvplot(sfit, conf.int = TRUE, ggtheme = theme_bw(),
+    dat <- get_data()
+    sfit <- make_sfit(dat, input$caixa)
+    ggsurvplot(sfit, data = dat, conf.int = TRUE, ggtheme = theme_bw(),
                risk.table.col = "strata", fun = "cumhaz")
   })
 }
